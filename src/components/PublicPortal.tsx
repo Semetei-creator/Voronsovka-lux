@@ -170,6 +170,7 @@ export const PublicPortal: React.FC<PublicPortalProps> = ({
   const [birthDate, setBirthDate] = useState('1990-01-01');
   const [gender, setGender] = useState<'мужской' | 'женский'>('мужской');
   const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
   const [omsNumber, setOmsNumber] = useState('');
   const [bloodType, setBloodType] = useState('O Rh+ (I)');
   const [allergiesInput, setAllergiesInput] = useState('');
@@ -202,6 +203,7 @@ export const PublicPortal: React.FC<PublicPortalProps> = ({
       birthDate,
       gender,
       phone,
+      email: email || 'semaarykov@gmail.com',
       omsNumber,
       bloodType,
       allergies,
@@ -216,6 +218,7 @@ export const PublicPortal: React.FC<PublicPortalProps> = ({
     // Clear Form
     setFullName('');
     setPhone('');
+    setEmail('');
     setOmsNumber('');
     setAllergiesInput('');
 
@@ -697,6 +700,17 @@ export const PublicPortal: React.FC<PublicPortalProps> = ({
                   value={omsNumber}
                   onChange={(e) => setOmsNumber(e.target.value.replace(/\D/g, ''))}
                   className="w-full px-3 py-2 text-xs font-bold border border-slate-300 rounded-xl text-slate-950 font-mono focus:ring-2 focus:ring-emerald-500 bg-slate-50/50 focus:outline-none"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wide">{t.formEmail}</label>
+                <input
+                  type="email"
+                  placeholder={t.formEmailPlaceholder}
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full px-3 py-2 text-xs font-semibold border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 bg-slate-50/50 text-slate-900 focus:outline-none"
                 />
               </div>
 

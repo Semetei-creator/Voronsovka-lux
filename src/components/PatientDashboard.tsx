@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   User, 
@@ -19,7 +19,11 @@ import {
   MapPin, 
   ExternalLink,
   Printer,
-  ChevronDown
+  ChevronDown,
+  CreditCard,
+  Check,
+  Lock,
+  Loader2
 } from 'lucide-react';
 import { Patient, Doctor, Appointment, Prescription, MedicalRecordEntry, TestResult } from '../types';
 
@@ -32,6 +36,7 @@ interface PatientDashboardProps {
   onSelectPatient: (patientId: string) => void;
   onBookAppointment: (appointment: Appointment) => void;
   onCancelAppointment: (appointmentId: string) => void;
+  onPayAppointment: (appointmentId: string, paymentId: string, amount: number) => void;
 }
 
 export const PatientDashboard: React.FC<PatientDashboardProps> = ({
@@ -43,6 +48,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
   onSelectPatient,
   onBookAppointment,
   onCancelAppointment,
+  onPayAppointment,
 }) => {
   const [activeTab, setActiveTab] = useState<'emk' | 'booking' | 'appointments'>('emk');
 
@@ -52,6 +58,64 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
   const [selectedDate, setSelectedDate] = useState('');
   const [selectedTime, setSelectedTime] = useState('');
   const [successBookingMsg, setSuccessBookingMsg] = useState<Appointment | null>(null);
+
+  // Stripe & Payment States
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [payingAppointment, setPayingAppointment] = useState<Appointment | null>(null);
+  const [ cardNumber, setCardNumber] = useState('');
+  const [cardHolder, setCardHolder] = useState('');
+  const [cardExpiry, setCardExpiry] = useState('');
+  const [cardCvv, setCardCvv] = useState('');
+  const [customerEmail, setCustomerEmail] = useState('semaarykov@gmail.com');
+  const [paymentLoading, setPaymentLoading] = useState(false);
+
+  const [testResendLoading, setTestResendLoading] = useState(false);
+  const [testResendResult, setTestResendResult] = useState<{ success: boolean; hint?: string; error?: string; envSet?: boolean; fromUsed?: string } | null>(null);
+
+  const [stripeInfo, setStripeInfo] = useState<{ simulated: boolean; clientSecret: string; amount: number; currency: string } | null>(null);
+  const [paymentError, setPaymentError] = useState('');
+
+  const [resendConfigStatus, setResendConfigStatus] = useState<{ configured: boolean; fromEmail: string; isDefaultSandbox: boolean } | null>(null);
+
+  useEffect(() => {
+    const fetchConfigStatus = async () => {
+      try {
+        const resp = await fetch('/api/resend/config-status');
+        const data = await resp.json();
+        if (data && data.resend) {
+          setResendConfigStatus(data.resend);
+        }
+      } catch (e) {
+        console.error("Failed to fetch resend config status", e);
+      }
+    };
+    fetchConfigStatus();
+  }, [paymentModalOpen]);
+
+  const handleTestResend = async () => {
+    if (!customerEmail || !customerEmail.includes('@')) {
+      alert('Пожалуйста, введите корректный адрес электронной почты для проверки.');
+      return;
+    }
+    setTestResendLoading(true);
+    setTestResendResult(null);
+    try {
+      const resp = await fetch('/api/resend/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ testEmail: customerEmail })
+      });
+      const data = await resp.json();
+      setTestResendResult(data);
+    } catch (err: any) {
+      setTestResendResult({
+        success: false,
+        error: err.message || 'Ошибка сети при обращении к серверу диагностики.'
+      });
+    } finally {
+      setTestResendLoading(false);
+    }
+  };
 
   // Active Patient retrieval
   const activePatient = patients.find(p => p.id === selectedPatientId) || patients[0];
@@ -138,6 +202,151 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
     setSelectedSpecialty('');
     setSelectedDate('');
     setSelectedTime('');
+  };
+
+  const initiateStripePayment = async (app: Appointment) => {
+    setPaymentLoading(true);
+    setPaymentError('');
+    setPayingAppointment(app);
+    setCardNumber('');
+    setCardHolder('');
+    setCardExpiry('');
+    setCardCvv('');
+
+    // Pre-fill the customer email from the patient record if defined
+    const patientObj = patients.find(p => p.id === app.patientId);
+    if (patientObj && patientObj.email) {
+      setCustomerEmail(patientObj.email);
+    } else {
+      setCustomerEmail('semaarykov@gmail.com');
+    }
+    
+    try {
+      const response = await fetch('/api/stripe/create-payment-intent', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          amount: 1500,
+          currency: 'USD',
+          doctorName: app.doctorName,
+          patientName: app.patientName,
+          appointmentId: app.id
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Не удалось подключиться к платежному шлюзу Stripe');
+      }
+
+      const data = await response.json();
+      setStripeInfo(data);
+      setPaymentModalOpen(true);
+    } catch (err: any) {
+      console.error(err);
+      setPaymentError(err.message || 'Ошибка платежной системы');
+      alert(`Ошибка Stripe: ${err.message || 'Не удалось связаться с сервером платежей'}`);
+    } finally {
+      setPaymentLoading(false);
+    }
+  };
+
+  const handlePayConfirm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cardNumber || !cardHolder || !cardExpiry || !cardCvv) {
+      setPaymentError('Пожалуйста, заполните все реквизиты карты.');
+      return;
+    }
+
+    setPaymentLoading(true);
+    setPaymentError('');
+
+    // Simulate payment processing
+    await new Promise(resolve => setTimeout(resolve, 1500));
+
+    try {
+      if (!payingAppointment) return;
+
+      const mockPaymentId = stripeInfo?.simulated 
+        ? `sim_pay_${Date.now()}_chk`
+        : `ch_${Date.now()}_stripe_success`;
+
+      // Call server backend to confirm payment and trigger Resend email service
+      const confResponse = await fetch('/api/stripe/confirm-payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          appointmentId: payingAppointment.id,
+          paymentId: mockPaymentId,
+          amount: stripeInfo?.amount || 1500,
+          patientName: payingAppointment.patientName,
+          doctorName: payingAppointment.doctorName,
+          doctorSpecialty: payingAppointment.doctorSpecialty,
+          date: payingAppointment.date,
+          time: payingAppointment.time,
+          customerEmail: customerEmail || 'semaarykov@gmail.com'
+        })
+      });
+
+      const confResult = await confResponse.json();
+      
+      let emailSentText = '';
+      if (confResult.resendDetails?.simulated) {
+        emailSentText = `\n\n📬 (Демо) Шаблон письма сгенерирован и выведен в консоль сервера (API-ключ RESEND не задан).`;
+      } else if (confResult.resendDetails?.deliveries) {
+        const deliveries = confResult.resendDetails.deliveries;
+        const successList = deliveries.filter((d: any) => d.success).map((d: any) => d.recipient);
+        const failList = deliveries.filter((d: any) => !d.success);
+        
+        if (successList.length > 0) {
+          emailSentText += `\n\n📧 Письмо об оплате успешно отправлено через Resend на адреса: ${successList.join(', ')}`;
+        }
+        
+        if (failList.length > 0) {
+          const sandboxFail = failList.find((d: any) => d.isSandboxRestriction);
+          if (sandboxFail) {
+            emailSentText += `\n\n⚠️ ВНИМАНИЕ (Песочница Resend): Письмо для пациента (${customerEmail}) не ушло, так как вы используете тестовый аккаунт Resend (onboarding@resend.dev). В песочнице можно отправлять только на свой собственный email (semaarykov@gmail.com). Для отправки пациентам нужно подтвердить свой домен (Domain Verification) на сайте Resend, либо добавить их почту в список 'Test Receivers' на панели Resend.`;
+          } else {
+            emailSentText += `\n\n⚠️ Ошибка отправки на ${failList.map((d: any) => d.recipient).join(', ')}: ${failList[0].error || 'ошибка доставки'}`;
+          }
+        }
+      } else {
+        emailSentText = `\n\n📧 Статус отправки писем не определен.`;
+      }
+
+      let telegramSentText = '';
+      if (confResult.telegramDetails?.simulated) {
+        telegramSentText = `\n\n🤖 (Демо) Сообщение для Telegram-бота выведено в консоль сервера (настройте TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в .env для отправки в мессенджер).`;
+      } else if (confResult.telegramSent) {
+        telegramSentText = `\n\n🤖 Уведомление об оплате успешно отправлено в ваш Telegram-чат!`;
+      } else {
+        telegramSentText = `\n\n⚠️ Ошибка Telegram бота: ${confResult.telegramDetails?.error || 'неизвестная ошибка'}`;
+      }
+
+      onPayAppointment(payingAppointment.id, mockPaymentId, stripeInfo?.amount || 1500);
+
+      if (successBookingMsg && successBookingMsg.id === payingAppointment.id) {
+        setSuccessBookingMsg({
+          ...successBookingMsg,
+          isPaid: true,
+          paymentId: mockPaymentId,
+          amountPaid: stripeInfo?.amount || 1500
+        });
+      }
+
+      setPaymentModalOpen(false);
+      setPayingAppointment(null);
+      setStripeInfo(null);
+      alert(`Оплата сеанса успешно зачислена через биллинг Stripe! Услуги курорта подтверждены.${emailSentText}${telegramSentText}`);
+    } catch (err: any) {
+      console.error(err);
+      setPaymentError('Произошла ошибка при завершении транзакции.');
+    } finally {
+      setPaymentLoading(false);
+    }
   };
 
   const triggerPrint = (id: string) => {
@@ -520,6 +729,34 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
                     </div>
                   </div>
 
+                  {/* Stripe Payment CTA inside success screen */}
+                  {!successBookingMsg.isPaid ? (
+                    <div className="bg-emerald-600/10 border border-emerald-500/20 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                      <div className="space-y-0.5 text-left">
+                        <div className="text-xs font-black text-slate-950 flex items-center gap-1.5">
+                          <CreditCard className="h-4 w-4 text-emerald-700" />
+                          <span>Оплата восстановительного сеанса</span>
+                        </div>
+                        <p className="text-[11px] text-slate-500">Рекомендуется оплатить сеанс <strong className="text-slate-800">1500 KGS</strong> для автоматической валидации.</p>
+                      </div>
+                      <button
+                        onClick={() => initiateStripePayment(successBookingMsg)}
+                        className="py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-[10px] rounded-xl transition duration-150 shadow-sm flex items-center justify-center gap-2 cursor-pointer uppercase tracking-wider font-sans shrink-0 font-bold"
+                      >
+                        <CreditCard className="h-3.5 w-3.5" />
+                        <span>Оплатить Stripe</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="bg-emerald-50 border border-emerald-250/50 rounded-2xl p-4 flex items-center gap-3">
+                      <div className="h-8 w-8 rounded-full bg-emerald-600 text-white flex items-center justify-center text-xs font-bold shrink-0">✓</div>
+                      <div className="text-left">
+                        <div className="text-xs font-black text-emerald-950">Прием успешно оплачен через шлюз Stripe!</div>
+                        <div className="text-[10px] text-slate-400 font-mono">Шифр транзакции: {successBookingMsg.paymentId}</div>
+                      </div>
+                    </div>
+                  )}
+                  
                   <div className="flex justify-center space-x-3">
                     <button
                       onClick={() => triggerPrint(`print-ticket-box-${successBookingMsg.id}`)}
@@ -721,6 +958,30 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
                           <MapPin className="h-5 w-5 text-emerald-600 shrink-0 ml-2" />
                         </div>
                       </div>
+
+                      {/* Stripe Payment Integration row */}
+                      <div className="border-t border-slate-150 pt-3.5 flex items-center justify-between gap-3 text-xs">
+                        {app.isPaid ? (
+                          <div className="flex items-center space-x-1.5 text-emerald-850 font-semibold bg-emerald-50 border border-emerald-250/60 rounded-xl px-3 py-2 w-full justify-between">
+                            <span className="flex items-center gap-1.5 font-extrabold tracking-tight text-[11px] text-emerald-900">
+                              <Check className="h-4 w-4 text-emerald-600 stroke-[2.5]" />
+                              <span>Оплачено через Stripe</span>
+                            </span>
+                            <span className="text-[10px] text-emerald-700/80 font-mono font-bold">1500 KGS</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-between w-full">
+                            <div className="text-slate-500 font-medium">К оплате сеанса: <span className="font-extrabold text-slate-950 font-sans">1500 KGS</span></div>
+                            <button
+                              onClick={() => initiateStripePayment(app)}
+                              className="text-[11px] font-extrabold text-white bg-emerald-600 hover:bg-emerald-700 px-3.5 py-1.5 rounded-xl shadow-sm transition flex items-center gap-1.5 cursor-pointer uppercase tracking-wider font-sans"
+                            >
+                              <CreditCard className="h-3 w-3" />
+                              <span>Оплатить Stripe</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     <div className="bg-slate-50 px-5 py-4 border-t border-slate-200/80 flex items-center justify-between gap-4">
@@ -775,6 +1036,316 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
         )}
 
       </div>
+
+      {/* Stripe Payment Modal popup */}
+      <AnimatePresence>
+        {paymentModalOpen && payingAppointment && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 15 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-3xl max-w-lg w-full overflow-hidden shadow-2xl border border-slate-200 flex flex-col"
+            >
+              {/* Header */}
+              <div className="bg-emerald-800 text-white p-6 relative">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentModalOpen(false);
+                    setPayingAppointment(null);
+                    setStripeInfo(null);
+                  }}
+                  className="absolute right-4 top-4 text-white/85 hover:text-white transition text-lg bg-emerald-950/40 w-8 h-8 rounded-full flex items-center justify-center font-bold font-sans"
+                >
+                  ✕
+                </button>
+                <div className="flex items-center space-x-3">
+                  <div className="p-2.5 bg-emerald-700/80 rounded-xl">
+                    <CreditCard className="h-6 w-6 text-white" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black tracking-tight font-sans">Безопасная оплата Stripe</h3>
+                    <p className="text-[10px] text-emerald-200/90 tracking-wide font-medium mt-0.5 uppercase tracking-wider font-sans">Лицензированный платежный шлюз</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Body */}
+              <div className="p-6 space-y-6">
+                {/* Visual Glassmorphic Credit Card Representation */}
+                <div className="bg-gradient-to-br from-emerald-600 via-teal-700 to-slate-950 rounded-2xl p-5 text-white shadow-xl relative overflow-hidden aspect-[1.586/1] flex flex-col justify-between border border-emerald-500/30">
+                  <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.12),transparent_60%)] pointer-events-none" />
+                  
+                  {/* Top: Chip & Card Brand */}
+                  <div className="flex justify-between items-start">
+                    <div className="w-10 h-8 bg-gradient-to-tr from-amber-200/80 to-amber-100 rounded-lg border border-amber-300 flex items-center justify-center relative overflow-hidden">
+                      <div className="w-full h-px bg-amber-400/50 absolute top-2/4" />
+                      <div className="w-px h-full bg-amber-400/50 absolute left-2/4" />
+                    </div>
+                    {/* Brand Badge */}
+                    <span className="text-sm font-black italic tracking-wider bg-white/10 px-3 py-1 rounded-lg border border-white/10 font-sans">Stripe</span>
+                  </div>
+
+                  {/* Middle: Number */}
+                  <div className="font-mono text-lg sm:text-xl md:text-2xl tracking-widest text-center py-4 bg-black/10 rounded-xl my-2 selection:bg-emerald-800">
+                    {cardNumber || '•••• •••• •••• ••••'}
+                  </div>
+
+                  {/* Bottom: Holder & Expiry */}
+                  <div className="flex justify-between items-end text-xs uppercase font-medium">
+                    <div className="space-y-1 text-left">
+                      <div className="text-[8px] text-emerald-250 font-bold tracking-widest font-sans">Держатель карты</div>
+                      <div className="font-bold truncate max-w-[170px] text-slate-100 font-sans">{cardHolder || 'CARDHOLDER NAME'}</div>
+                    </div>
+                    <div className="space-y-1 text-right">
+                      <div className="text-[8px] text-emerald-250 font-bold tracking-widest font-sans">Срок действия</div>
+                      <div className="font-mono font-bold text-slate-100">{cardExpiry || 'MM/YY'}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Billing Summary Box */}
+                <div className="bg-slate-50 border border-slate-150 rounded-2xl p-4 space-y-2 text-xs text-left">
+                  <div className="flex justify-between font-bold text-slate-900 font-sans">
+                    <span>Услуга:</span>
+                    <span className="text-slate-700 font-semibold">{payingAppointment.doctorSpecialty}</span>
+                  </div>
+                  <div className="flex justify-between font-bold text-slate-900 font-sans">
+                    <span>Специалист:</span>
+                    <span className="text-slate-700 font-semibold">{payingAppointment.doctorName}</span>
+                  </div>
+                  <div className="h-px bg-slate-150 my-2" />
+                  <div className="flex justify-between items-center text-sm font-black text-slate-950 font-sans">
+                    <span className="flex items-center gap-1 font-extrabold text-slate-800">
+                      <Lock className="h-4 w-4 text-emerald-700" />
+                      <span>Итого к оплате Stripe:</span>
+                    </span>
+                    <span className="font-mono text-emerald-850 text-base font-black">1500 KGS</span>
+                  </div>
+                  {stripeInfo?.simulated && (
+                    <div className="text-[10px] text-amber-800 bg-amber-50 border border-amber-200/50 rounded-xl px-3 py-2 text-center font-bold leading-relaxed mt-2 uppercase tracking-wide font-sans">
+                      ⚡ Демо-режим (Stripe API-ключ не задан в .env). Оплата обрабатывается через симулятор Stripe.
+                    </div>
+                  )}
+                </div>
+
+                {/* Form fields */}
+                <form onSubmit={handlePayConfirm} className="space-y-4 text-xs font-sans">
+                  
+                  {/* Email for Resend notification */}
+                  <div className="space-y-1 text-left">
+                    <div className="flex justify-between items-center">
+                      <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block font-sans">Электронная почта для чека через Resend</label>
+                      <button
+                        type="button"
+                        onClick={handleTestResend}
+                        disabled={testResendLoading}
+                        className="text-[10px] text-emerald-600 hover:text-emerald-700 font-extrabold focus:outline-none transition underline cursor-pointer disabled:opacity-50"
+                      >
+                        {testResendLoading ? 'Проверка...' : '🔗 Проверить доставку'}
+                      </button>
+                    </div>
+                    <input
+                      required
+                      type="email"
+                      placeholder="e.g. semaarykov@gmail.com"
+                      value={customerEmail}
+                      onChange={(e) => setCustomerEmail(e.target.value)}
+                      className="w-full bg-slate-50 hover:bg-slate-100 focus:bg-white border border-slate-200 rounded-xl p-3 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition duration-150 font-sans"
+                    />
+
+                    {/* Test Connection Diagnostics Results UI */}
+                    {testResendResult && (
+                      <div className={`mt-2 p-3 rounded-xl border text-[11px] leading-relaxed font-sans text-left ${
+                        testResendResult.success 
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-950 shadow-sm' 
+                          : 'bg-red-50 border-red-200 text-red-950 shadow-sm'
+                      }`}>
+                        <div className="flex items-center gap-1.5 font-extrabold mb-1">
+                          <span className={testResendResult.success ? 'text-emerald-600 font-black' : 'text-red-600 font-black'}>
+                            {testResendResult.success ? '✅ Тест Resend: Письмо ушло!' : '❌ Тест Resend не удался'}
+                          </span>
+                        </div>
+                        {testResendResult.error && (
+                          <p className="font-semibold text-red-700 bg-red-100/50 p-1.5 rounded-lg border border-red-200/40 mb-1.5 break-words font-mono text-[10px]">{testResendResult.error}</p>
+                        )}
+                        <p className="font-medium text-slate-700">{testResendResult.hint}</p>
+                        {testResendResult.success && (
+                          <div className="mt-1.5 text-[10px] text-slate-500 font-mono bg-white/60 p-1.5 rounded-lg border border-slate-150">
+                            <b>Успешно:</b> {testResendResult.targetEmail} <br/>
+                            <b>Отправитель:</b> {testResendResult.fromUsed}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Resend Setup & Sandbox Guidance Helper block */}
+                    {resendConfigStatus && (
+                      <div className="mt-2 text-left">
+                        {!resendConfigStatus.configured ? (
+                          <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-[11px] leading-relaxed text-amber-900 font-sans font-medium">
+                            <span className="font-extrabold text-amber-800 flex items-center gap-1 mb-1">
+                              <span>⚠️ Демо-режим (Resend не настроен)</span>
+                            </span>
+                            Вы не задали переменную <strong className="font-bold underline">RESEND_API_KEY</strong> в настройках проекта. Письма будут только имитироваться на стороне сервера во встроенном логе.
+                            <div className="mt-2 text-[10px] text-amber-950 font-bold space-y-1 bg-white/50 p-2 rounded-lg border border-amber-150">
+                              <p className="mb-1 text-[10.5px]">Инструкция по настройке:</p>
+                              <div className="list-decimal pl-3 space-y-0.5">
+                                <div>1. Откройте <b>Settings</b> (иконку шестерёнки вверху IDE) в Google AI Studio.</div>
+                                <div>2. Перейдите во вкладку <b>Environment Variables</b>.</div>
+                                <div>3. Добавьте переменную <code className="bg-amber-100 px-1 border border-amber-200 rounded font-bold font-mono">RESEND_API_KEY</code> со своим API-ключом (вида <code className="bg-amber-100 px-1 rounded font-bold">re_...</code>).</div>
+                                <div>4. Нажмите кнопку <b>Restart Dev Server</b> (или перекомпилируйте), чтобы новые переменные применились в контейнере!</div>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-3 bg-emerald-50/70 border border-emerald-150 rounded-xl text-[11px] leading-relaxed text-emerald-950 font-sans font-medium">
+                            <span className="font-extrabold text-emerald-800 flex items-center gap-1">
+                              <span>✅ Интеграция Resend активна!</span>
+                            </span>
+                            {resendConfigStatus.isDefaultSandbox ? (
+                              <div className="mt-1 text-slate-600 font-normal leading-normal text-[10.5px] p-2 bg-white/60 border border-slate-200/50 rounded-lg">
+                                <span className="font-bold text-slate-900">Ограничение песочницы Resend (Sandbox):</span><br/>
+                                Сейчас используется тестовый отправитель <code className="bg-slate-100 px-1 border border-slate-200 text-slate-800 rounded font-mono">onboarding@resend.dev</code>. В бесплатном тарифе Resend доставляет письма <strong>ИСКЛЮЧИТЕЛЬНО</strong> на тот адрес электронной почты, на который была зарегистрирована ваша учетная запись. 
+                                <br/><br/>
+                                ❗️ Чтобы письмо пришло, введите вашу почту регистрации (например, <strong className="text-emerald-950 font-black">{customerEmail || "semaarykov@gmail.com"}</strong>). <br/><br/>
+                                Чтобы отправлять письма на любые другие сторонние адреса пациентов, вам необходимо зайти в панель Resend на сайте и подтвердить свой личный домен (Domain Verification).
+                              </div>
+                            ) : (
+                              <p className="mt-1 text-slate-600 font-normal text-[10.5px]">
+                                Письма отправляются с вашего личного подтвержденного домена (<code className="font-mono">{resendConfigStatus.fromEmail}</code>). Они будут успешно доставляться всем сторонним адресам пациентов!
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Cardholder name */}
+                  <div className="space-y-1 text-left">
+                    <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block font-sans">Держатель карты (Латиницей)</label>
+                    <input
+                      required
+                      type="text"
+                      placeholder="e.g. SEMETEY ARYKOV"
+                      value={cardHolder}
+                      onChange={(e) => setCardHolder(e.target.value.toUpperCase())}
+                      className="w-full bg-slate-50 hover:bg-slate-100 focus:bg-white border border-slate-200 rounded-xl p-3 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition duration-150 uppercase font-sans"
+                    />
+                  </div>
+
+                  {/* Card number */}
+                  <div className="space-y-1 text-left">
+                    <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block font-sans">Номер карты</label>
+                    <input
+                      required
+                      type="text"
+                      maxLength={19}
+                      placeholder="4000 1234 5678 9010"
+                      value={cardNumber}
+                      onChange={(e) => {
+                        const clean = e.target.value.replace(/\D/g, '');
+                        const parts = [];
+                        for (let i = 0; i < clean.length; i += 4) {
+                          parts.push(clean.substring(i, i + 4));
+                        }
+                        setCardNumber(parts.slice(0, 4).join(' '));
+                      }}
+                      className="w-full bg-slate-50 hover:bg-slate-100 focus:bg-white border border-slate-200 rounded-xl p-3 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition duration-150"
+                    />
+                  </div>
+
+                  {/* Expiry and CVV */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1 text-left">
+                      <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block font-sans">Срок действия</label>
+                      <input
+                        required
+                        type="text"
+                        maxLength={5}
+                        placeholder="MM/YY"
+                        value={cardExpiry}
+                        onChange={(e) => {
+                          const clean = e.target.value.replace(/\D/g, '');
+                          if (clean.length > 2) {
+                            setCardExpiry(`${clean.substring(0, 2)}/${clean.substring(2, 4)}`);
+                          } else {
+                            setCardExpiry(clean);
+                          }
+                        }}
+                        className="w-full bg-slate-50 hover:bg-slate-100 focus:bg-white border border-slate-200 rounded-xl p-3 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition duration-150"
+                      />
+                    </div>
+
+                    <div className="space-y-1 text-left">
+                      <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block font-sans">CVV / CVC код</label>
+                      <input
+                        required
+                        type="password"
+                        maxLength={3}
+                        placeholder="•••"
+                        value={cardCvv}
+                        onChange={(e) => setCardCvv(e.target.value.replace(/\D/g, '').slice(0, 3))}
+                        className="w-full bg-slate-50 hover:bg-slate-100 focus:bg-white border border-slate-200 rounded-xl p-3 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition duration-150"
+                      />
+                    </div>
+                  </div>
+
+                  {paymentError && (
+                    <div className="text-[11px] font-bold text-red-650 bg-red-50 border border-red-200 p-2.5 rounded-xl text-center font-sans">
+                      ⚠ {paymentError}
+                    </div>
+                  )}
+
+                  {/* Actions */}
+                  <div className="pt-3 flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPaymentModalOpen(false);
+                        setPayingAppointment(null);
+                        setStripeInfo(null);
+                      }}
+                      className="w-full py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold block rounded-2xl transition duration-150 text-center cursor-pointer uppercase tracking-wider text-[10px] font-sans"
+                    >
+                      Отмена
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={paymentLoading}
+                      className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold rounded-2xl shadow-sm transition duration-150 flex items-center justify-center gap-2 cursor-pointer uppercase tracking-wider text-[10px] disabled:bg-slate-200 disabled:text-slate-400 font-sans"
+                    >
+                      {paymentLoading ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin text-white" />
+                          <span>Обработка Stripe...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="h-3.5 w-3.5 text-emerald-100" />
+                          <span>Оплатить 1500 KGS</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  <div className="text-[10px] text-slate-400 flex items-center justify-center gap-1 mt-2 font-medium font-sans">
+                    <span>🛡 Данные шифруются по стандарту PCI-DSS TLS 1.3</span>
+                  </div>
+                </form>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

@@ -98,6 +98,13 @@ export default function App() {
     saveAppointmentsToStorage(updated);
   };
 
+  const handlePayAppointment = (appId: string, paymentId: string, amount: number) => {
+    const updated = appointments.map(app =>
+      app.id === appId ? { ...app, isPaid: true, paymentId, amountPaid: amount } : app
+    );
+    saveAppointmentsToStorage(updated);
+  };
+
   const handleCompleteAppointment = (appId: string) => {
     const updated = appointments.map(app => 
       app.id === appId ? { ...app, status: 'completed' as const } : app
@@ -208,6 +215,7 @@ export default function App() {
                   onSelectPatient={setSelectedPatientId}
                   onBookAppointment={handleBookAppointment}
                   onCancelAppointment={handleCancelAppointment}
+                  onPayAppointment={handlePayAppointment}
                 />
               )}
 

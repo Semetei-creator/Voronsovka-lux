@@ -107,6 +107,7 @@ export const INITIAL_PATIENTS: Patient[] = [
     omsNumber: '4628190876124534',
     bloodType: 'A Rh+ (II)',
     allergies: ['Пенициллин', 'Пыльца березы'],
+    email: 'semaarykov@gmail.com',
     records: [
       {
         id: 'rec-101',
@@ -179,6 +180,7 @@ export const INITIAL_PATIENTS: Patient[] = [
     omsNumber: '1122334455667788',
     bloodType: 'B Rh- (III)',
     allergies: ['Анальгин', 'Клубника'],
+    email: 'semaarykov@gmail.com',
     records: [
       {
         id: 'rec-201',

@@ -53,6 +53,7 @@ export interface Patient {
   omsNumber: string; // 16 digits
   bloodType: string;
   allergies: string[];
+  email?: string;
   records: MedicalRecordEntry[];
   prescriptions: Prescription[];
   testResults: TestResult[];
@@ -70,4 +71,7 @@ export interface Appointment {
   date: string;
   time: string;
   status: 'scheduled' | 'completed' | 'cancelled';
+  isPaid?: boolean;
+  paymentId?: string;
+  amountPaid?: number;
 }
